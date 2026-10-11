@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Колесо фортуны</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #7d7d7d);
+    --btn: var(--tg-theme-button-color, #2481cc);
+    --btn-text: var(--tg-theme-button-text-color, #ffffff);
+    --card: var(--tg-theme-secondary-bg-color, #f1f1f4);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 28px; padding: 20px; padding-top: calc(20px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
+  h1 { margin: 0; font-size: 24px; }
+  .wheel-wrap { position: relative; width: min(82vw, 340px); aspect-ratio: 1; }
+  canvas { width: 100%; height: 100%; display: block; border-radius: 50%;
+    box-shadow: 0 8px 30px rgba(0,0,0,.25);
+    transition: transform 5s cubic-bezier(.12,.7,.1,1); }
+  .pointer { position: absolute; top: -10px; left: 50%; transform: translateX(-50%);
+    width: 0; height: 0; border-left: 14px solid transparent; border-right: 14px solid transparent;
+    border-top: 26px solid #e53935; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); z-index: 2; }
+  .hub { position: absolute; top: 50%; left: 50%; width: 16%; aspect-ratio: 1; transform: translate(-50%,-50%);
+    background: var(--bg); border-radius: 50%; box-shadow: 0 0 0 5px rgba(0,0,0,.12); z-index: 1;
+    display: flex; align-items: center; justify-content: center; font-size: 22px; }
+  button.spin { width: min(82vw, 340px); padding: 16px; font-size: 18px; font-weight: 600; border: 0;
+    border-radius: 14px; background: var(--btn); color: var(--btn-text); cursor: pointer; }
+  button.spin:disabled { opacity: .55; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+    align-items: center; justify-content: center; padding: 24px; z-index: 10; }
+  .modal.show { display: flex; }
+  .card { background: var(--bg); border-radius: 20px; padding: 28px 24px; text-align: center;
+    width: min(88vw, 320px); animation: pop .3s ease; }
+  .card .big { font-size: 72px; line-height: 1.1; }
+  .card h2 { margin: 12px 0 6px; font-size: 22px; }
+  .card p { margin: 0 0 20px; color: var(--hint); }
+  .card button { width: 100%; padding: 14px; font-size: 16px; font-weight: 600; border: 0;
+    border-radius: 12px; background: var(--btn); color: var(--btn-text); }
+  @keyframes pop { from { transform: scale(.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+</style>
+</head>
+<body>
+  <h1>🎡 Колесо фортуны</h1>
+
+  <div class="wheel-wrap">
+    <div class="pointer"></div>
+    <canvas id="wheel" width="680" height="680"></canvas>
+    <div class="hub">⭐</div>
+  </div>
+
+  <button class="spin" id="spinBtn"></button>
+
+  <div class="modal" id="modal">
+    <div class="card">
+      <div class="big" id="mEmoji"></div>
+      <h2 id="mTitle"></h2>
+      <p id="mText"></p>
+      <button id="mClose">Ок</button>
+    </div>
+  </div>
+
+<script>
+/* ========== НАСТРОЙКИ ========== */
+const SPIN_PRICE = 10;      // цена одного вращения в звёздах (поменяй как нужно)
+const API_URL = location.protocol === "file:" ? "" : location.origin;  // на сервере работает сам; при открытии файла — тестовый режим
+
+// Секторы по кругу (по часовой, начиная с верха). w — вес выпадения.
+const PRIZES = [
+  { emoji: "🧸", name: "Мишка",  stars: 15, w: 5,  color: "#ff8a65" },
+  { emoji: "✖️", name: "",       stars: 0,  w: 44, color: "#90a4ae" },
+  { emoji: "❤️", name: "Сердце", stars: 15, w: 5,  color: "#ec407a" },
+  { emoji: "✖️", name: "",       stars: 0,  w: 44, color: "#78909c" },
+  { emoji: "🎁", name: "Подарок", stars: 25, w: 2,  color: "#ab47bc" },
+];
+/* =============================== */
+
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const haptic = (t) => { try { tg?.HapticFeedback?.notificationOccurred(t); } catch (e) {} };
+
+const N = PRIZES.length, SEG = 360 / N;
+const canvas = document.getElementById("wheel");
+const ctx = canvas.getContext("2d");
+const btn = document.getElementById("spinBtn");
+btn.textContent = `Крутить за ⭐ ${SPIN_PRICE}`;
+
+function drawWheel() {
+  const c = canvas.width / 2, r = c - 6;
+  PRIZES.forEach((p, i) => {
+    const a0 = (i * SEG - 90) * Math.PI / 180, a1 = ((i + 1) * SEG - 90) * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(c, c); ctx.arc(c, c, r, a0, a1); ctx.closePath();
+    ctx.fillStyle = p.color; ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.lineWidth = 4; ctx.stroke();
+    ctx.save();
+    ctx.translate(c, c); ctx.rotate((a0 + a1) / 2);
+    ctx.translate(r * 0.66, 0); ctx.rotate(Math.PI / 2);
+    ctx.font = "88px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(p.emoji, 0, 0);
+    ctx.restore();
+  });
+  ctx.beginPath(); ctx.arc(c, c, r, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(0,0,0,.2)"; ctx.lineWidth = 6; ctx.stroke();
+}
+drawWheel();
+
+// Выбор приза по весам (используется только в тестовом режиме;
+// в рабочем режиме результат присылает сервер)
+function pickLocal() {
+  const total = PRIZES.reduce((s, p) => s + p.w, 0);
+  let x = Math.random() * total;
+  for (let i = 0; i < N; i++) { x -= PRIZES[i].w; if (x < 0) return i; }
+  return N - 1;
+}
+
+let rotation = 0, busy = false;
+
+function spinTo(index) {
+  return new Promise((resolve) => {
+    const jitter = (Math.random() - 0.5) * SEG * 0.6;
+    const target = -(index * SEG + SEG / 2) + jitter;
+    const cur = ((rotation % 360) + 360) % 360;
+    let delta = ((target - cur) % 360 + 360) % 360;
+    rotation += 360 * 6 + delta;
+    canvas.style.transform = `rotate(${rotation}deg)`;
+    setTimeout(resolve, 5100);
+  });
+}
+
+function showResult(i) {
+  const p = PRIZES[i];
+  const win = p.stars > 0;
+  document.getElementById("mEmoji").textContent = win ? p.emoji : "😔";
+  document.getElementById("mTitle").textContent = win ? `Ты выиграл: ${p.name}!` : "В этот раз пусто";
+  document.getElementById("mText").textContent = win ? `Подарок за ⭐ ${p.stars} отправим тебе в чат` : "Попробуй ещё раз, повезёт в следующий!";
+  document.getElementById("modal").classList.add("show");
+  haptic(win ? "success" : "warning");
+}
+document.getElementById("mClose").onclick = () => document.getElementById("modal").classList.remove("show");
+
+async function post(path, body) {
+  const res = await fetch(API_URL + path, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initData: tg?.initData || "", ...body }),
+  });
+  if (!res.ok) throw new Error("Ошибка сервера");
+  return res.json();
+}
+
+// Оплата Stars: сервер создаёт счёт (createInvoiceLink, валюта XTR) -> оплата -> сервер сам определяет приз
+function payInvoice(url) {
+  return new Promise((resolve) => tg.openInvoice(url, (status) => resolve(status)));
+}
+
+btn.onclick = async () => {
+  if (busy) return;
+  busy = true; btn.disabled = true;
+  try {
+    let index;
+    if (!API_URL) {
+      index = pickLocal();                       // тестовый режим
+    } else {
+      const { invoice } = await post("/spin", {});
+      const status = await payInvoice(invoice);
+      if (status !== "paid") { busy = false; btn.disabled = false; return; }
+      ({ index } = await post("/result", { invoice }));
+    }
+    await spinTo(index);
+    showResult(index);
+  } catch (e) {
+    alert("Не получилось, попробуй ещё раз");
+  }
+  busy = false; btn.disabled = false;
+};
+</script>
+</body>
+</html>
